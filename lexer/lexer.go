@@ -3,6 +3,7 @@ package lexer
 import (
 	"bytes"
 	"fmt"
+	_ "strings"
 )
 
 type State int
@@ -14,6 +15,28 @@ const (
 	CaseWaitPattern
 	Command
 )
+
+// Keywords
+var Keywords = map[string]interface{}{
+	"while": nil,
+	"until": nil,
+	"then":  nil,
+	"in":    nil,
+	"if":    nil,
+	"for":   nil,
+	"fi":    nil,
+	"esac":  nil,
+	"else":  nil,
+	"elif":  nil,
+	"done":  nil,
+	"do":    nil,
+	"case":  nil,
+}
+
+func isKeyword(s string) (ok bool) {
+	_, ok = Keywords[s]
+	return
+}
 
 // Lexer is a splitter of the shell syntax.
 type Lexer struct {
@@ -194,7 +217,7 @@ func (l *Lexer) Get() (Node, error) {
 	case '#':
 		return l.consumeUntil([]byte("\n"), Comment), nil
 	case '\n':
-		if l.state == Command {
+		if l.state != CaseWaitPattern {
 			l.state = Normal
 		}
 		return l.consume(1, NewLine), nil
@@ -217,6 +240,9 @@ func (l *Lexer) Get() (Node, error) {
 			return nil, fmt.Errorf("expected \"in\", got %q", lexeme.Data)
 		}
 		l.state = CaseWaitPattern
+		if isKeyword(string(lexeme.Data)) {
+			lexeme.Kind = Keyword
+		}
 		return lexeme, nil
 	}
 
@@ -233,6 +259,9 @@ func (l *Lexer) Get() (Node, error) {
 		if string(lexeme.Data) == "esac" {
 			l.state = Normal
 		}
+		if isKeyword(string(lexeme.Data)) {
+			lexeme.Kind = Keyword
+		}
 		return lexeme, nil
 	}
 
@@ -245,18 +274,22 @@ func (l *Lexer) Get() (Node, error) {
 			l.state = CaseWaitPattern
 			return leaf, nil
 		}
+		l.state = Normal
 		return l.consume(1, Operator), nil
 	case '&':
+		l.state = Normal
 		if leaf, ok := l.tryConsumeString("&&", Operator); ok {
 			return leaf, nil
 		}
 		return l.consume(1, Operator), nil
 	case '|':
+		l.state = Normal
 		if leaf, ok := l.tryConsumeString("||", Operator); ok {
 			return leaf, nil
 		}
 		return l.consume(1, Operator), nil
 	case '<':
+		l.state = Normal
 		for _, op := range []string{"<<-", "<<", "<>", "<&"} {
 			if leaf, ok := l.tryConsumeString(op, Operator); ok {
 				return leaf, nil
@@ -264,6 +297,7 @@ func (l *Lexer) Get() (Node, error) {
 		}
 		return l.consume(1, Operator), nil
 	case '>':
+		l.state = Normal
 		for _, op := range []string{">>", ">&", ">|"} {
 			if leaf, ok := l.tryConsumeString(op, Operator); ok {
 				return leaf, nil
@@ -271,6 +305,7 @@ func (l *Lexer) Get() (Node, error) {
 		}
 		return l.consume(1, Operator), nil
 	case '!', '(', ')', '{', '}':
+		l.state = Normal
 		return l.consume(1, Operator), nil
 	case '"':
 		l.state = Command
@@ -279,10 +314,13 @@ func (l *Lexer) Get() (Node, error) {
 
 	lexeme := l.consumeUntil([]byte(specialSymbols), Word)
 	if l.state == Normal {
+		if isKeyword(string(lexeme.Data)) {
+			lexeme.Kind = Keyword
+		}else {
+			l.state = Command
+		}
 		if string(lexeme.Data) == "case" {
 			l.state = CaseWaitWord
-		} else {
-			l.state = Command
 		}
 	}
 	return lexeme, nil
