@@ -39,7 +39,37 @@ var keywords = map[string]struct{}{
 type Lexer struct {
 	Input    []byte
 	consumed int
+	buffered int
 	state    State
+}
+
+func (l *Lexer) getChar() byte {
+	return l.Input[l.buffered]
+}
+
+func (l *Lexer) incBuffer() bool {
+	l.buffered += 1
+	if l.buffered == len(l.Input) {
+		return false
+	}
+	return true
+}
+
+func (l *Lexer) getBuffer() []byte {
+	return l.Input[l.consumed : l.buffered]
+}
+
+func (l *Lexer) getBufferSize() int {
+	return l.buffered - l.consumed
+}
+
+func (l *Lexer) setBufferSize(size int) int {
+	if l.consumed+size >= len(l.Input) {
+		l.buffered = len(l.Input)
+		return l.getBufferSize()
+	}
+	l.buffered = l.consumed + size
+	return l.getBufferSize()
 }
 
 func (l *Lexer) consume(size int, kind Kind) Leaf {
@@ -49,30 +79,37 @@ func (l *Lexer) consume(size int, kind Kind) Leaf {
 		pos:  Pos(l.consumed),
 	}
 	l.consumed += size
+	l.buffered = l.consumed
 	return leaf
 }
 
 func (l *Lexer) tryConsumeString(s string, kind Kind) (Leaf, bool) {
-	if l.consumed+len(s) > len(l.Input) {
+	oldBufSize := l.getBufferSize()
+	newBufSize := l.setBufferSize(len(s))
+	if newBufSize != len(s) {
+		l.setBufferSize(oldBufSize)
 		return Leaf{}, false
 	}
-	data := l.Input[l.consumed : l.consumed+len(s)]
-	if string(data) != s {
+	if string(l.getBuffer()) != s {
+		l.setBufferSize(oldBufSize)
 		return Leaf{}, false
 	}
-	return l.consume(len(s), kind), true
+	return l.consume(l.getBufferSize(), kind), true
 }
 
 func (l *Lexer) consumeFunc(f func(c byte) bool, kind Kind) Leaf {
-	buf := l.Input[l.consumed:]
-	i := 0
-	for i < len(buf) && f(buf[i]) {
-		i++
+	ok := true
+	for ok {
+		c := l.getChar()
+		if !f(c) {
+			break
+		}
+		ok = l.incBuffer()
 	}
-	if i == 0 {
+	if l.getBufferSize() == 0 {
 		panic("nothing consumed")
 	}
-	return l.consume(i, kind)
+	return l.consume(l.getBufferSize(), kind)
 }
 
 func (l *Lexer) consumeWhile(b []byte, kind Kind) Leaf {
@@ -138,27 +175,34 @@ func isVariableName(c byte) bool {
 }
 
 func (l *Lexer) getVariable() (Node, error) {
-	buf := l.Input[l.consumed:]
-	if len(buf) == 0 || buf[0] != '$' {
+	if l.getChar() != '$' {
 		panic("expected $")
 	}
-	if len(buf) == 1 {
-		return l.consume(1, Variable), nil
+	if !l.incBuffer() {
+		panic("unexpected EOF")
 	}
-	if buf[1] == '(' {
+
+	c := l.getChar()
+
+	switch c {
+	case '(':
 		return l.getSubshellString()
-	}
-	if buf[1] == '{' {
+	case '{':
 		panic("TODO: ${...} not implemented") // FIXME
 	}
-	if !isVariableName(buf[1]) {
-		return l.consume(2, Variable), nil
+	if !l.incBuffer() {
+		panic("unexpected EOF")
 	}
-	i := 1
-	for i < len(buf) && isVariableName(buf[i]) {
-		i++
+
+	ok := true
+	for ok {
+		c = l.getChar()
+		if !isVariableName(c) {
+			break
+		}
+		ok = l.incBuffer()
 	}
-	return l.consume(i, Variable), nil
+	return l.consume(l.getBufferSize(), Variable), nil
 }
 
 func (l *Lexer) getQQStringNode() (Node, error) {
